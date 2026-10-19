@@ -39,10 +39,30 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:
 .empty{grid-column:1/-1;text-align:center;color:var(--dim);padding:40px}
 .legend{font-size:.8rem;color:var(--dim);margin-top:6px}
 .legend b{display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 4px 0 10px;vertical-align:baseline}
+#gate{position:fixed;inset:0;z-index:20;background:rgba(10,8,28,.88);display:flex;align-items:center;justify-content:center;padding:20px}
+#gate[hidden]{display:none}
+#gate .box{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:24px;width:100%;max-width:340px}
+#gate h2{margin:0 0 4px;font-size:1.3rem}#gate p{margin:0 0 14px;color:var(--dim);font-size:.9rem}
+#gate input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:10px 12px;font:inherit}
+#gate .err{color:var(--red);font-size:.85rem;min-height:1.2em;margin:6px 0}
+#gate .row{display:flex;gap:8px}#gate .row button{flex:1}
+#gate .ok{background:var(--green);border-color:var(--green);font-weight:600}
+.ro .st button{pointer-events:none}.ro .st button:not([aria-pressed=true]){display:none}
+.sync{font-size:.8rem;color:var(--dim)}
+button:disabled{opacity:.4;cursor:not-allowed}
 @media (prefers-reduced-motion:reduce){.bar i{transition:none}}
 </style>
 </head>
 <body>
+<div id="gate" role="dialog" aria-modal="true" aria-labelledby="gt">
+  <form class="box" id="gform">
+    <h2 id="gt">ShinyDex</h2>
+    <p>Ingresá la contraseña para poder editar.</p>
+    <input type="password" id="pw" placeholder="Contraseña" autocomplete="current-password" aria-label="Contraseña">
+    <div class="err" id="gerr" role="alert"></div>
+    <div class="row"><button type="submit" class="ok">Entrar</button><button type="button" id="view">Solo ver</button></div>
+  </form>
+</div>
 <header>
   <div class="top">
     <h1>ShinyDex</h1>
@@ -54,7 +74,7 @@ main{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:
     <select id="f" aria-label="Filtrar por estado">
       <option value="all">Todos</option><option value="0">Me faltan (rojo)</option><option value="1">Los tengo (verde)</option><option value="2">No lo tengo en HOME (amarillo)</option>
     </select>
-    <button id="exp">Exportar</button><button id="imp">Importar</button>
+    <button id="exp">Exportar</button><button id="imp">Importar</button><button id="lockbtn">Desbloquear</button><button id="gh" hidden>Conectar GitHub</button><span class="sync" id="sync" aria-live="polite"></span>
     <input type="file" id="file" accept="application/json" hidden>
   </div>
   <div class="chips" id="chips"></div>
@@ -71,6 +91,26 @@ try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&s.owned)st={...st,...s}}
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){}};
 const $=id=>document.getElementById(id);
 const grid=$('grid');
+// Bloqueo de edición (solo desalienta ediciones casuales; el hash es visible en el código)
+const HASH='10f11b0b9aaf0d122867ecf5537c8a33c2ea94c9aa8fd6a5a6d03e8c9eada63c';
+let canEdit=false;
+async function sha(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+function setMode(e){
+  canEdit=e;document.body.classList.toggle('ro',!e);$('gate').hidden=true;
+  $('lockbtn').textContent=e?'Bloquear':'Desbloquear';$('imp').disabled=!e;updateGh();
+  try{e?sessionStorage.setItem('shiny-auth',HASH):sessionStorage.removeItem('shiny-auth')}catch(x){}
+}
+function showGate(){$('gate').hidden=false;$('gerr').textContent='';$('pw').value='';$('pw').focus()}
+$('gform').addEventListener('submit',async ev=>{
+  ev.preventDefault();
+  if(!(window.crypto&&crypto.subtle)){$('gerr').textContent='Este navegador no permite verificar la contraseña aquí.';return}
+  if(await sha($('pw').value)===HASH)setMode(true);
+  else{$('gerr').textContent='Contraseña incorrecta.';$('pw').value='';$('pw').focus()}
+});
+$('view').onclick=()=>setMode(false);
+$('lockbtn').onclick=()=>canEdit?setMode(false):showGate();
+let authed=false;try{authed=sessionStorage.getItem('shiny-auth')===HASH}catch(x){}
+if(authed)setMode(true);else{setMode(false);showGate()}
 const pad=n=>String(n).padStart(4,'0');
 
 // Chips de categorías
@@ -98,9 +138,10 @@ function paint(card){
   card.querySelectorAll('.st button').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.s===s)));
 }
 grid.addEventListener('click',e=>{
-  const b=e.target.closest('.st button');if(!b)return;
+  const b=e.target.closest('.st button');if(!b||!canEdit)return;
   const card=b.closest('.card'),s=+b.dataset.s;
   if(s)st.owned[card.dataset.id]=s;else delete st.owned[card.dataset.id];
+  queue(card.dataset.id,s);
   paint(card);save();progress();if($('f').value!=='all')apply();
 });
 const cards=[...grid.querySelectorAll('.card')];cards.forEach(paint);
@@ -124,25 +165,105 @@ function apply(){
 }
 $('q').addEventListener('input',apply);$('f').addEventListener('change',apply);
 
+// ===== Sincronización con GitHub: el progreso vive en progress.json dentro del repo =====
+const GH={o:'FedeSola09',r:'ShinyDex',b:'main',p:'progress.json'};
+const API=`https://api.github.com/repos/${GH.o}/${GH.r}`;
+const TK='shiny-token',PK='shiny-pending';
+let pending={};try{pending=JSON.parse(localStorage.getItem(PK))||{}}catch(e){}
+let timer=null,flushing=false;
+function token(){try{return localStorage.getItem(TK)}catch(e){return null}}
+function savePending(){try{localStorage.setItem(PK,JSON.stringify(pending))}catch(e){}}
+function setSync(t,bad){const el=$('sync');el.textContent=t;el.style.color=bad?'var(--red)':''}
+function updateGh(){$('gh').hidden=!canEdit;$('gh').textContent=token()?'GitHub: conectado ✓':'Conectar GitHub'}
+function hdr(){const h={Accept:'application/vnd.github+json'};const t=token();if(t)h.Authorization='Bearer '+t;return h}
+async function getRemote(){
+  const r=await fetch(`${API}/contents/${GH.p}?ref=${GH.b}&_=${Date.now()}`,{headers:hdr(),cache:'no-store'});
+  if(r.status===404)return{owned:{},sha:null};
+  if(!r.ok)throw new Error(r.status);
+  const j=await r.json();
+  return{owned:JSON.parse(atob(j.content.replace(/\s/g,''))).owned||{},sha:j.sha};
+}
+function applyOwned(o){
+  const m={...o};
+  for(const [id,s] of Object.entries(pending)){if(s)m[id]=s;else delete m[id]}
+  st.owned=m;save();cards.forEach(paint);apply();progress();
+}
+function queue(id,s){
+  pending[id]=s;savePending();
+  if(!token()){setSync('Solo local: conectá GitHub para guardar en el repo',true);return}
+  setSync('Cambios sin guardar…');clearTimeout(timer);timer=setTimeout(flush,1500);
+}
+async function flush(){
+  if(flushing){timer=setTimeout(flush,800);return}
+  const snap={...pending};if(!Object.keys(snap).length||!token())return;
+  flushing=true;setSync('Guardando…');
+  try{
+    for(let i=0;i<2;i++){
+      const r=await getRemote();const o={...r.owned};
+      for(const [id,s] of Object.entries(snap)){if(s)o[id]=s;else delete o[id]}
+      const sorted={};Object.keys(o).sort((a,b)=>parseInt(a)-parseInt(b)||a.localeCompare(b)).forEach(k=>sorted[k]=o[k]);
+      const body={message:'Update progress',branch:GH.b,content:btoa(JSON.stringify({owned:sorted,updated:new Date().toISOString()}))};
+      if(r.sha)body.sha=r.sha;
+      const res=await fetch(`${API}/contents/${GH.p}`,{method:'PUT',headers:{...hdr(),'Content-Type':'application/json'},body:JSON.stringify(body)});
+      if(res.ok){
+        for(const id in snap)if(pending[id]===snap[id])delete pending[id];
+        savePending();applyOwned(sorted);setSync('Guardado en GitHub ✓');return;
+      }
+      if(res.status===401||res.status===403){setSync('Token inválido o sin permisos',true);return}
+      if(res.status!==409&&res.status!==422)throw new Error(res.status);
+    }
+    setSync('Conflicto al guardar, probá de nuevo',true);
+  }catch(e){setSync('Sin conexión: cambios guardados solo localmente',true)}
+  finally{flushing=false}
+}
+async function load(){
+  setSync('Cargando…');
+  try{
+    const r=await getRemote();
+    if(r.sha===null){
+      for(const [id,s] of Object.entries(st.owned))pending[id]=s;
+      savePending();setSync(token()?'Creando progress.json…':'Todavía no hay progress.json en el repo');
+    }else{applyOwned(r.owned);setSync('Sincronizado ✓')}
+    if(token()&&Object.keys(pending).length)flush();
+  }catch(e){setSync('Sin conexión: mostrando copia local',true)}
+}
+$('gh').onclick=async()=>{
+  if(token()){
+    if(confirm('¿Desconectar GitHub en este dispositivo?')){try{localStorage.removeItem(TK)}catch(e){}updateGh();setSync('Desconectado: los cambios quedan solo locales',true)}
+    return;
+  }
+  const t=(prompt('Pegá tu token de GitHub (fine-grained, permiso Contents: lectura y escritura sobre ShinyDex):')||'').trim();
+  if(!t)return;
+  try{
+    const r=await fetch(API,{headers:{Accept:'application/vnd.github+json',Authorization:'Bearer '+t}});
+    const j=await r.json();
+    if(!r.ok||!j.permissions||!j.permissions.push)throw 0;
+    localStorage.setItem(TK,t);updateGh();setSync('Conectado ✓');
+    await load();
+  }catch(e){alert('El token no es válido o no tiene permiso de escritura sobre el repo.')}
+};
+
 // Exportar / importar progreso
 $('exp').onclick=()=>{
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([JSON.stringify(st)],{type:'application/json'}));
   a.download='shiny-progreso.json';a.click();URL.revokeObjectURL(a.href);
 };
-$('imp').onclick=()=>$('file').click();
+$('imp').onclick=()=>{if(canEdit)$('file').click()};
 $('file').onchange=async e=>{
-  const f=e.target.files[0];if(!f)return;
+  const f=e.target.files[0];if(!f||!canEdit)return;
   try{
     const d=JSON.parse(await f.text());
     if(!d||typeof d.owned!=='object')throw 0;
-    st={owned:d.owned,cats:{...st.cats,...(d.cats||{})}};save();
+    const old=st.owned,nw=d.owned;st={owned:nw,cats:{...st.cats,...(d.cats||{})}};save();
+    for(const id of new Set([...Object.keys(old),...Object.keys(nw)]))if((old[id]||0)!==(nw[id]||0))queue(id,nw[id]||0);
     cards.forEach(paint);document.querySelectorAll('#chips input').forEach(i=>i.checked=!!st.cats[i.dataset.c]);
     apply();progress();
   }catch{alert('El archivo no es un progreso válido.')}
   e.target.value='';
 };
 apply();progress();
+load();
 </script>
 </body>
 </html>
