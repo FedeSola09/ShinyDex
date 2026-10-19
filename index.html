@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ShinyDex</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#15132b;--panel:#1f1c3d;--line:#352f66;--ink:#f1eefc;--dim:#a9a3d1;--red:#e5484d;--green:#30a46c;--yellow:#f5c518;--r:14px}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Bricolage Grotesque",system-ui,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:14px 20px 12px}
+.top{display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+h1{margin:0;font-size:1.5rem;font-weight:800;letter-spacing:-.02em}
+.count{font-size:1.5rem;font-weight:800;margin-left:auto;font-variant-numeric:tabular-nums}
+.count small{font-weight:400;color:var(--dim);font-size:.9rem;margin-left:8px}
+.bar{display:flex;height:10px;border-radius:99px;overflow:hidden;background:var(--panel);margin:10px 0}
+.bar i{display:block;transition:width .25s}
+.bar .g{background:var(--green)}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input[type=search]{flex:1 1 200px;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:9px 12px;font:inherit}
+button,select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer}
+button:hover{border-color:var(--dim)}
+:focus-visible{outline:2px solid var(--yellow);outline-offset:2px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.chips label{display:flex;gap:6px;align-items:center;font-size:.85rem;color:var(--dim);cursor:pointer;padding:4px 10px;border:1px solid var(--line);border-radius:99px}
+.chips input{accent-color:var(--green)}
+main{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;padding:16px 20px 60px}
+.card{background:var(--panel);border:2px solid var(--line);border-radius:var(--r);padding:10px;text-align:center;content-visibility:auto;contain-intrinsic-size:260px}
+.card.s0{border-color:#6b2a3a}.card.s1{border-color:var(--green)}.card.s2{border-color:var(--yellow)}
+.num{font-size:.8rem;color:var(--dim);font-variant-numeric:tabular-nums;text-align:left}
+.card img{width:100%;aspect-ratio:1;object-fit:contain;display:block}
+.name{font-size:.9rem;font-weight:600;min-height:2.4em;line-height:1.2;display:flex;align-items:center;justify-content:center}
+.st{display:flex;gap:6px;justify-content:center;margin-top:6px}
+.st button{width:34px;height:34px;padding:0;border-radius:50%;border:2px solid transparent;opacity:.35}
+.st button[aria-pressed=true]{opacity:1;border-color:#fff}
+.st .r{background:var(--red)}.st .g{background:var(--green)}.st .y{background:var(--yellow)}
+.empty{grid-column:1/-1;text-align:center;color:var(--dim);padding:40px}
+.legend{font-size:.8rem;color:var(--dim);margin-top:6px}
+.legend b{display:inline-block;width:10px;height:10px;border-radius:50%;margin:0 4px 0 10px;vertical-align:baseline}
+@media (prefers-reduced-motion:reduce){.bar i{transition:none}}
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <h1>ShinyDex</h1>
+    <div class="count" aria-live="polite"><span id="n">0/0</span> – <span id="p">0%</span><small id="det"></small></div>
+  </div>
+  <div class="bar" aria-hidden="true"><i class="g" id="bg"></i></div>
+  <div class="tools">
+    <input type="search" id="q" placeholder="Buscar por nombre o número" aria-label="Buscar">
+    <select id="f" aria-label="Filtrar por estado">
+      <option value="all">Todos</option><option value="0">Me faltan (rojo)</option><option value="1">Los tengo (verde)</option><option value="2">No lo tengo en HOME (amarillo)</option>
+    </select>
+    <button id="exp">Exportar</button><button id="imp">Importar</button>
+    <input type="file" id="file" accept="application/json" hidden>
+  </div>
+  <div class="chips" id="chips"></div>
+  <div class="legend"><b style="background:var(--red)"></b>No lo tengo<b style="background:var(--green)"></b>Lo tengo<b style="background:var(--yellow)"></b>No lo tengo en HOME</div>
+</header>
+<main id="grid"></main>
+<script src="data.js"></script>
+<script>
+const KEY='shiny-tracker-v1';
+const CATS={base:'Base',regional:'Regionales',forma:'Otras formas'};
+const IMG='https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/';
+let st={owned:{},cats:{base:1,regional:1,forma:1}};
+try{const s=JSON.parse(localStorage.getItem(KEY));if(s&&s.owned)st={...st,...s}}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){}};
+const $=id=>document.getElementById(id);
+const grid=$('grid');
+const pad=n=>String(n).padStart(4,'0');
+
+// Chips de categorías
+$('chips').innerHTML=Object.entries(CATS).map(([k,v])=>`<label><input type="checkbox" data-c="${k}" ${st.cats[k]?'checked':''}>${v}</label>`).join('');
+$('chips').addEventListener('change',e=>{st.cats[e.target.dataset.c]=e.target.checked?1:0;save();apply();progress()});
+
+// Tarjetas
+grid.innerHTML=POKEMON.map(([dex,id,name,cat])=>`
+<article class="card s${st.owned[id]||0}" data-id="${id}" data-cat="${cat}" data-dex="${dex}" data-name="${name.toLowerCase()}">
+  <div class="num">#${pad(dex)}</div>
+  <img loading="lazy" alt="${name} shiny" src="${IMG}other/official-artwork/shiny/${id}.png" data-fb="${IMG}shiny/${id}.png|${IMG}other/official-artwork/shiny/${dex}.png|${IMG}shiny/${dex}.png">
+  <div class="name">${name}</div>
+  <div class="st" role="group" aria-label="Estado de ${name}">
+    <button class="r" data-s="0" aria-label="No lo tengo" title="No lo tengo"></button>
+    <button class="g" data-s="1" aria-label="Lo tengo" title="Lo tengo"></button>
+    <button class="y" data-s="2" aria-label="No lo tengo en HOME" title="No lo tengo en HOME"></button>
+  </div>
+</article>`).join('')+'<div class="empty" id="empty" hidden>No hay resultados con estos filtros.</div>';
+
+grid.addEventListener('error',e=>{const i=e.target;if(i.tagName!=='IMG')return;const l=(i.dataset.fb||'').split('|').filter(Boolean);if(l.length){i.src=l.shift();i.dataset.fb=l.join('|')}else i.style.visibility='hidden'},true);
+
+function paint(card){
+  const s=st.owned[card.dataset.id]||0;
+  card.className='card s'+s;
+  card.querySelectorAll('.st button').forEach(b=>b.setAttribute('aria-pressed',String(+b.dataset.s===s)));
+}
+grid.addEventListener('click',e=>{
+  const b=e.target.closest('.st button');if(!b)return;
+  const card=b.closest('.card'),s=+b.dataset.s;
+  if(s)st.owned[card.dataset.id]=s;else delete st.owned[card.dataset.id];
+  paint(card);save();progress();if($('f').value!=='all')apply();
+});
+const cards=[...grid.querySelectorAll('.card')];cards.forEach(paint);
+
+function progress(){
+  let tot=0,g=0,y=0;
+  for(const c of cards){if(!st.cats[c.dataset.cat])continue;tot++;const s=st.owned[c.dataset.id]||0;if(s===1)g++;else if(s===2)y++}
+  const pct=tot?g/tot*100:0;
+  $('n').textContent=`${g}/${tot}`;$('p').textContent=`${Math.round(pct)}%`;
+  $('det').textContent=`${y} no lo tengo en HOME`;
+  $('bg').style.width=pct+'%';
+}
+function apply(){
+  const q=$('q').value.trim().toLowerCase(),f=$('f').value;let shown=0;
+  for(const c of cards){
+    const s=String(st.owned[c.dataset.id]||0);
+    const ok=st.cats[c.dataset.cat]&&(f==='all'||f===s)&&(!q||c.dataset.name.includes(q)||c.dataset.dex===String(+q)||pad(c.dataset.dex).includes(q));
+    c.hidden=!ok;if(ok)shown++;
+  }
+  $('empty').hidden=shown>0;
+}
+$('q').addEventListener('input',apply);$('f').addEventListener('change',apply);
+
+// Exportar / importar progreso
+$('exp').onclick=()=>{
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(st)],{type:'application/json'}));
+  a.download='shiny-progreso.json';a.click();URL.revokeObjectURL(a.href);
+};
+$('imp').onclick=()=>$('file').click();
+$('file').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  try{
+    const d=JSON.parse(await f.text());
+    if(!d||typeof d.owned!=='object')throw 0;
+    st={owned:d.owned,cats:{...st.cats,...(d.cats||{})}};save();
+    cards.forEach(paint);document.querySelectorAll('#chips input').forEach(i=>i.checked=!!st.cats[i.dataset.c]);
+    apply();progress();
+  }catch{alert('El archivo no es un progreso válido.')}
+  e.target.value='';
+};
+apply();progress();
+</script>
+</body>
+</html>
